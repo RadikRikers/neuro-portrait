@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AudiencePanel } from './components/AudiencePanel'
 import { CompareResults } from './components/CompareResults'
 import { Header } from './components/Header'
@@ -16,19 +16,28 @@ import type {
   UploadedImage,
   UdmurtiaZone,
 } from './types'
+import {
+  loadAnalysisSettings,
+  saveAnalysisSettings,
+  type AnalysisSettings,
+} from './utils/analysis-settings'
 import { compareResults } from './utils/compare'
 import { isOllamaAvailable, pickVisionModel } from './utils/ollama'
 import { generatePortraits } from './utils/personas'
+import { selectPortraitsForAnalysis } from './utils/select-portraits'
 import { loadCustomSegments, saveCustomSegments } from './utils/segment-registry'
 import { testText } from './utils/test-text'
 
-const DEFAULT_SEGMENTS: PresetSegmentId[] = ['student', 'worker', 'parent', 'udmurt_speaker']
+const DEFAULT_SEGMENTS: PresetSegmentId[] = [
+  'student', 'worker', 'parent', 'urban_mass',
+  'svo_family_spouse', 'svo_veteran', 'opposition', 'udmurt_speaker',
+]
 
 const SAMPLE_TEXT = `Вожкы озон!
 
-Мы запускаем новую программу для жителей Ижевска. Это возможность узнать больше о культуре Удмуртии и принять участие в интересных событиях.
+В Ижевске 20 июля откроется выставка удмуртского декоративно-прикладного искусства. Экспозиция разместится в Национальном музее им. К. Герасимова.
 
-Подробности скоро. Следите за обновлениями.`
+Вход свободный. Время работы: 10:00–18:00.`
 
 export default function App() {
   const [selectedSegments, setSelectedSegments] = useState<AudienceSegmentId[]>(DEFAULT_SEGMENTS)
@@ -42,13 +51,21 @@ export default function App() {
   const [useOllama, setUseOllama] = useState(true)
   const [ollamaAvailable, setOllamaAvailable] = useState(false)
   const [hasVision, setHasVision] = useState(false)
+  const [analysisSettings, setAnalysisSettings] = useState<AnalysisSettings>(() => loadAnalysisSettings())
   const [loading, setLoading] = useState(false)
+  const [loadingStep, setLoadingStep] = useState<string | null>(null)
   const [result, setResult] = useState<TextTestResult | null>(null)
   const [compare, setCompare] = useState<CompareResult | null>(null)
+  const resultsRef = useRef<HTMLDivElement>(null)
 
   const portraits = useMemo(
-    () => generatePortraits(selectedSegments, selectedZones, customSegments),
-    [selectedSegments, selectedZones, customSegments],
+    () => generatePortraits(
+      selectedSegments,
+      selectedZones,
+      customSegments,
+      analysisSettings.portraitsPerSegment,
+    ),
+    [selectedSegments, selectedZones, customSegments, analysisSettings.portraitsPerSegment],
   )
 
   const analysisMode = useMemo(() => {
@@ -76,10 +93,41 @@ export default function App() {
     setCompare(null)
   }
 
+  const handleAnalysisSettingsChange = useCallback((settings: AnalysisSettings) => {
+    setAnalysisSettings(settings)
+    saveAnalysisSettings(settings)
+    clearResults()
+  }, [])
+
+  const buildAnalysisMeta = useCallback(() => {
+    const poolSize = portraits.length
+    const analyzedCount = selectPortraitsForAnalysis(
+      portraits,
+      analysisSettings.maxPortraitsForTest,
+    ).length
+    return {
+      segmentCount: selectedSegments.length,
+      portraitsPerSegment: analysisSettings.portraitsPerSegment,
+      poolSize,
+      analyzedCount,
+      limited: analyzedCount < poolSize,
+    }
+  }, [portraits, selectedSegments.length, analysisSettings])
+
   const toggleSegment = useCallback((id: AudienceSegmentId) => {
     setSelectedSegments((prev) =>
       prev.includes(id) ? prev.filter((s) => s !== id) : [...prev, id],
     )
+    clearResults()
+  }, [])
+
+  const selectGroup = useCallback((ids: PresetSegmentId[]) => {
+    setSelectedSegments((prev) => {
+      const allSelected = ids.every((id) => prev.includes(id))
+      if (allSelected) return prev.filter((s) => !ids.includes(s as PresetSegmentId))
+      const merged = new Set([...prev, ...ids])
+      return [...merged]
+    })
     clearResults()
   }, [])
 
@@ -98,25 +146,47 @@ export default function App() {
   const handleTest = async () => {
     if (selectedSegments.length === 0) return
     setLoading(true)
+    setLoadingStep('Подготовка…')
     clearResults()
 
     const ollama = useOllama && ollamaAvailable
+    const analysisMeta = buildAnalysisMeta()
+    const portraitsForTest = selectPortraitsForAnalysis(
+      portraits,
+      analysisSettings.maxPortraitsForTest,
+    )
+    const testOpts = {
+      analysisMeta,
+      onProgress: setLoadingStep,
+    }
 
     try {
       if (mode === 'single') {
         if (!text.trim()) return
-        const testResult = await testText(text, portraits, contentType, selectedZones, ollama, customSegments, images)
+        const testResult = await testText(
+          text,
+          portraitsForTest,
+          contentType,
+          selectedZones,
+          ollama,
+          customSegments,
+          images,
+          testOpts,
+        )
         setResult(testResult)
+        requestAnimationFrame(() => resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
       } else {
         if (!text.trim() || !textB.trim()) return
         const [resultA, resultB] = await Promise.all([
-          testText(text, portraits, contentType, selectedZones, ollama, customSegments, images),
-          testText(textB, portraits, contentType, selectedZones, ollama, customSegments, images),
+          testText(text, portraitsForTest, contentType, selectedZones, ollama, customSegments, images, testOpts),
+          testText(textB, portraitsForTest, contentType, selectedZones, ollama, customSegments, images, testOpts),
         ])
         setCompare(compareResults(resultA, resultB))
+        requestAnimationFrame(() => resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
       }
     } finally {
       setLoading(false)
+      setLoadingStep(null)
     }
   }
 
@@ -125,6 +195,17 @@ export default function App() {
     selectedZones.length > 0 &&
     (mode === 'single' ? text.trim().length > 10 : text.trim().length > 10 && textB.trim().length > 10)
 
+  const testHint = useMemo(() => {
+    if (canTest) return null
+    if (selectedSegments.length === 0) return 'Выберите хотя бы один сегмент аудитории'
+    if (selectedZones.length === 0) return 'Выберите хотя бы один город'
+    if (mode === 'single' && text.trim().length <= 10) return 'Вставьте текст поста (минимум 11 символов)'
+    if (mode === 'compare' && (text.trim().length <= 10 || textB.trim().length <= 10)) {
+      return 'Заполните оба поста для сравнения'
+    }
+    return null
+  }, [canTest, selectedSegments.length, selectedZones.length, mode, text, textB])
+
   return (
     <div className="min-h-screen bg-surface">
       <Header />
@@ -132,11 +213,10 @@ export default function App() {
       <main className="max-w-6xl mx-auto px-4 py-8">
         <div className="mb-8 text-center max-w-2xl mx-auto">
           <h2 className="font-display text-2xl md:text-3xl font-bold text-white mb-2">
-            Тестируйте тексты и{' '}
-            <span className="gradient-text">фото</span> на нейро-портретах
+            Проверьте <span className="gradient-text">пост</span> до публикации
           </h2>
           <p className="text-sm text-slate-400">
-            Текст + изображения, прогноз отклика, сравнение A/B, отчёт в .txt
+            Аудитория → текст поста → отклик персонажей → рекомендации и отчёт
           </p>
         </div>
 
@@ -147,6 +227,8 @@ export default function App() {
               customSegments={customSegments}
               selectedZones={selectedZones}
               portraits={portraits}
+              analysisSettings={analysisSettings}
+              onAnalysisSettingsChange={handleAnalysisSettingsChange}
               onToggleSegment={toggleSegment}
               onToggleZone={(z) => {
                 setSelectedZones((prev) =>
@@ -159,6 +241,7 @@ export default function App() {
                 ...AUDIENCE_SEGMENTS.map((s) => s.id),
                 ...customSegments.map((s) => s.id),
               ])}
+              onSelectGroup={selectGroup}
               onAddCustom={handleAddCustom}
               onRemoveCustom={handleRemoveCustom}
             />
@@ -175,6 +258,11 @@ export default function App() {
               ollamaAvailable={ollamaAvailable}
               analysisMode={analysisMode}
               loading={loading}
+              loadingStep={loadingStep}
+              portraitCount={selectPortraitsForAnalysis(portraits, analysisSettings.maxPortraitsForTest).length}
+              canTest={canTest}
+              testHint={testHint}
+              sampleText={SAMPLE_TEXT}
               onModeChange={(m) => { setMode(m); clearResults() }}
               onTextChange={(t) => { setText(t); clearResults() }}
               onTextBChange={(t) => { setTextB(t); clearResults() }}
@@ -183,22 +271,14 @@ export default function App() {
               onContentTypeChange={setContentType}
               onUseOllamaChange={setUseOllama}
               onTest={handleTest}
-              canTest={canTest}
             />
 
-            {!text && mode === 'single' && (
-              <button
-                type="button"
-                onClick={() => setText(SAMPLE_TEXT)}
-                className="text-xs text-slate-500 hover:text-indigo-300"
-              >
-                Вставить пример текста
-              </button>
-            )}
-
-            {compare && <CompareResults compare={compare} />}
-
-            {result && !compare && <TestResults result={result} />}
+            <div ref={resultsRef}>
+              {compare && <CompareResults compare={compare} />}
+              {result && !compare && (
+                <TestResults result={result} reactionSettings={analysisSettings} />
+              )}
+            </div>
           </div>
         </div>
       </main>

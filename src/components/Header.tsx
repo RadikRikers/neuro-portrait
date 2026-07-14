@@ -8,7 +8,7 @@ export function Header() {
           </div>
           <div>
             <h1 className="font-display font-bold text-white text-base leading-tight">НейроПортрет</h1>
-            <p className="text-xs text-slate-500">Тестирование текстов · Удмуртия</p>
+            <p className="text-xs text-slate-500">Тест постов · Удмуртия</p>
           </div>
         </div>
         <span className="text-xs text-slate-500 hidden sm:block">Вожкы озон — проверьте текст до публикации</span>

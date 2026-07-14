@@ -1,6 +1,13 @@
+import {
+  getVoiceProfile,
+  isPresetSegment,
+  VOICE_REACTION_TEMPLATES,
+  type UdmurtiaVoiceProfile,
+} from '../data/udmurtia-voices'
 import type { AudienceSegmentId, ContentType, NeuroPortrait, PresetSegmentId } from '../types'
 
-interface HeuristicCtx {
+export interface HeuristicCtx {
+  text: string
   lower: string
   hasQuestion: boolean
   hasCta: boolean
@@ -15,8 +22,13 @@ export interface PersonaNarrative {
   emotion: string
   wants: string
   firstImpression: string
+  readingContext: string
+  hookedBy: string | null
+  turnedOffBy: string | null
   summary: string
   innerMonologue: string
+  livedHighlights: string[]
+  livedMissing: string[]
 }
 
 const EMOTIONS = {
@@ -25,107 +37,141 @@ const EMOTIONS = {
   negative: ['раздражение', 'недоверие', 'скука', 'тревога', 'отторжение', 'усталость'],
 } as const
 
-const SEGMENT_WANTS: Record<PresetSegmentId, string[]> = {
-  school: [
-    'понять, есть ли что-то для моего возраста, а не «для всех»',
-    'увидеть живой тон, а не нотацию от взрослых',
-    'получить повод скинуть друзьям или поучаствовать',
-  ],
-  student: [
-    'увидеть реальную пользу — стажировка, событие, возможность',
-    'чтобы не стыдно было репостнуть — без пафоса и штампов',
-    'понять, зачем мне это сейчас, а не «когда-нибудь»',
-  ],
-  young_pro: [
-    'конкретику: даты, места, цифры, что делать дальше',
-    'ощущение, что регион развивается, а не «отчитывается»',
-    'короткий понятный вывод без воды',
-  ],
-  worker: [
-    'понять практическую пользу для семьи и работы',
-    'увидеть уважение к труду, а не красивые слова',
-    'чтобы не тратили время — суть в двух фразах',
-  ],
-  parent: [
-    'ясную пользу для ребёнка и семьи',
-    'безопасность и понятные шаги «что делать»',
-    'тёплый тон без запугивания и официоза',
-  ],
-  kindergarten_parent: [
-    'уверенность, что ребёнку будет хорошо и безопасно',
-    'советы по адаптации или поддержке родителей',
-    'чтобы не только про один город, если пост на всю республику',
-  ],
-  senior: [
-    'ясность без мелкого шрифта и сложных слов',
-    'уважительный тон и связь с традициями региона',
-    'понять, куда обратиться или что получить',
-  ],
-  rural: [
-    'увидеть сельскую жизнь, а не только Ижевск',
-    'понять, как это касается села и семьи',
-    'простые слова про дороги, ярмарки, клуб, быт',
-  ],
-  udmurt_speaker: [
-    'живой удмуртский контекст, а не «галочка для отчёта»',
-    'уважение к языку и культуре без стереотипов',
-    'ощущение, что нас слышат, а не используют для картинки',
-  ],
+const OFFICIAL_MARKERS = [
+  'в рамках', 'осуществля', 'данный', 'является', 'настоящим', 'инновац',
+  'трансформац', 'потенциал', 'синерг', 'федеральн', 'масштабн',
+]
+
+/** Фразы редактора/маркетолога — не должны попадать в отклик жителя */
+const EDITOR_VOICE = [
+  /нет (cta|призыва|локальн|вопроса|понятного)/i,
+  /добавьте/i,
+  /нужн[ао] (локальн|структур|баланс)/i,
+  /текст слишком/i,
+  /инфопост/i,
+  /для (школьник|студент|родител|пенсионер|рабоч)/i,
+  /локальн(ый|ых) маркер/i,
+  /триггер/i,
+  /привязк[аи] к удмуртии/i,
+  /призыв к действию/i,
+  /не раскрыта суть/i,
+  /учтена (боль|тема)/i,
+  /сработал триггер/i,
+  /понятный информационный/i,
+  /редактор/i,
+  /реценз/i,
+]
+
+export function isEditorVoice(phrase: string): boolean {
+  return EDITOR_VOICE.some((re) => re.test(phrase))
 }
 
-const SEGMENT_IMPRESSIONS: Record<PresetSegmentId, { good: string[]; mid: string[]; bad: string[] }> = {
+export function filterLivedPhrases(phrases: string[]): string[] {
+  return phrases.filter((p) => p.trim() && !isEditorVoice(p))
+}
+
+const SEGMENT_SELF: Partial<Record<PresetSegmentId, { keywords: string[]; hit: string; miss: string }>> = {
   school: {
-    good: ['О, про нас что-то нормальное, не как в школе на линейке.', 'Звучит живо — можно глянуть.'],
-    mid: ['Ну такое… вроде не бесит, но и не цепляет.', 'Прочитаю, если друзья скинут.'],
-    bad: ['Опять взрослые пишут «для молодёжи» — кринж.', 'Пролистаю, это не про меня.'],
+    keywords: ['школ', 'урок', 'экзамен', 'огэ', 'егэ', 'класс', 'учител', 'директ'],
+    hit: 'ну типа про школу — жиза, это моё',
+    miss: 'школа не звучит — мимо, пролистну',
   },
   student: {
-    good: ['Наконец что-то по делу, не «развитие потенциала».', 'Можно сходить / репостнуть в чат.'],
-    mid: ['Идея норм, но подано как пресс-релиз.', 'Посмотрю, если будет время.'],
-    bad: ['Московский шаблон в ижевской обёртке.', 'Снова пустые слова — зря время.'],
+    keywords: ['универ', 'студент', 'сессия', 'общаг', 'пара', 'диплом', 'ижгту', 'удгу'],
+    hit: 'короче про универ/сессию — зашло, не душно',
+    miss: 'ни слова про учёбу — ну такое, мимо',
   },
   young_pro: {
-    good: ['Структурно и по делу — сохраню.', 'Видно локальный контекст, не федеральный шаблон.'],
-    mid: ['Тема интересная, но мало конкретики.', 'Дочитаю, если в конце будет CTA.'],
-    bad: ['Вода и абстракции — для отчёта, не для людей.', 'Не вижу, зачем мне это.'],
+    keywords: ['карьер', 'зарплат', 'работ', 'професс', 'специалист', 'ваканс', 'проект'],
+    hit: 'по сути про работу и рост — мне актуально',
+    miss: 'не вижу зачем мне как специалисту — вода',
   },
   worker: {
-    good: ['По-человечески, без заумности — уважают.', 'Понятно, что делать и кому это нужно.'],
-    mid: ['Вроде не врут, но толку мало пока.', 'Прочитаю до конца, если коротко.'],
-    bad: ['Опять красивые слова — людей не слышат.', 'Чужой текст, не про нашу жизнь.'],
+    keywords: ['смен', 'завод', 'цех', 'зарплат', 'рабоч', 'производств', 'калашников', 'ижмаш'],
+    hit: 'вот про смену и завод — своим перешлю',
+    miss: 'опять не про тех кто на смене — не моё',
   },
   parent: {
-    good: ['Спокойно и по делу — подумаю, полезно ли детям.', 'Тёплый тон, чувствую заботу.'],
-    mid: ['Непонятно, как это поможет семье.', 'Нужно больше конкретики про детей.'],
-    bad: ['Пугают или давят — не доверяю.', 'Опять общие слова без пользы.'],
-  },
-  kindergarten_parent: {
-    good: ['Про малышей и семью — читаю внимательно.', 'Спокойно, без паники — можно дочитать.'],
-    mid: ['Тема вроде наша, но мало про детсад.', 'Хочется больше про безопасность и адаптацию.'],
-    bad: ['Не про дошкольников — мы тут ни при чём.', 'Тревожно и непонятно — пролистаю.'],
+    keywords: ['ребён', 'дет', 'школ', 'кружок', 'секци', 'родител', 'урок'],
+    hit: 'ну вот про детей — сохраню в чат',
+    miss: 'не про родительские заботы — пройду мимо',
   },
   senior: {
-    good: ['Ясно написано, уважительно — дочитаю.', 'Приятно, что помнят про регион.'],
-    mid: ['Много слов, суть не сразу видна.', 'Прочитаю, если коротко и по пунктам.'],
-    bad: ['Непонятные слова и сленг — отстаньте.', 'Чувствую, что пишут не для нас.'],
+    keywords: ['пенси', 'здоров', 'поликлин', 'врач', 'внук', 'льгот', 'памят'],
+    hit: 'вот про льготы/здоровье — понятно написано',
+    miss: 'молодёжное или чужое — не про меня, закрою',
   },
-  rural: {
-    good: ['Про деревню и землю — это наше.', 'Наконец не только про столицу республики.'],
-    mid: ['Вроде про Удмуртию, но городской уклон.', 'Мало про сельскую жизнь.'],
-    bad: ['Снова только Ижевск — мы не существуем.', 'Чужой городской PR.'],
+  svo_participant: {
+    keywords: ['сво', 'фронт', 'контракт', 'льгот', 'семьи бойцов', 'ветеран'],
+    hit: 'короче про семьи и поддержку — по делу',
+    miss: 'пафос без конкретики — мимо',
   },
-  udmurt_speaker: {
-    good: ['Слышу наш культурный код — откликается.', 'Уважение к языку чувствуется.'],
-    mid: ['Тема правильная, но без живого удмуртского.', 'Формально про культуру, без души.'],
-    bad: ['Стереотипы и «галочка» — обидно.', 'Только русский шаблон — не про нас.'],
+  svo_veteran: {
+    keywords: ['реабилитац', 'ветеран', 'выплат', 'поликлин', 'птср', 'сво'],
+    hit: 'вот про реабилитацию и права — дочитаю',
+    miss: 'показная благодарность без дела — бесит',
+  },
+  svo_family_spouse: {
+    keywords: ['семьи', 'выплат', 'посылк', 'детей', 'сво', 'поддержк'],
+    hit: 'ну вот про семьи участников — сохраню',
+    miss: 'пустые слова поддержки — злюсь',
+  },
+  svo_family_parent: {
+    keywords: ['сын', 'дочь', 'семьи бойцов', 'льгот', 'юридическ', 'сво'],
+    hit: 'вот про родителей и помощь — понятно',
+    miss: 'политический пафос — не то',
+  },
+  opposition: {
+    keywords: ['расследован', 'факт', 'данн', 'проблем', 'коррупц', 'обман'],
+    hit: 'если честно есть факты — дочитаю',
+    miss: 'пропаганда и лозунги — мимо',
+  },
+  patriot_loyalist: {
+    keywords: ['память', 'победа', 'герой', 'сво', 'ветеран', 'подвиг'],
+    hit: 'правильно про память и армию — перешлю',
+    miss: 'нейтралитет — раздражает',
+  },
+  entrepreneur: {
+    keywords: ['ип', 'бизнес', 'грант', 'налог', 'поддержк предприним', 'аренд'],
+    hit: 'по сути про бизнес — интересно',
+    miss: 'обещания без цифр — вода',
+  },
+  blogger: {
+    keywords: ['тренд', 'контент', 'охват', 'вирус', 'мем'],
+    hit: 'хук норм — можно в сторис',
+    miss: 'кринжовый официоз — мимо',
+  },
+  teacher: {
+    keywords: ['школ', 'дет', 'егэ', 'огэ', 'урок', 'педагог'],
+    hit: 'ну вот про школу и детей — полезно',
+    miss: 'политизация — не надо',
+  },
+  medic: {
+    keywords: ['здоров', 'поликлин', 'врач', 'лечен', 'профилакт'],
+    hit: 'без паники про здоровье — ок',
+    miss: 'псевдонаука — бесит',
+  },
+  volunteer: {
+    keywords: ['волонтёр', 'сбор', 'помощь', 'нко', 'отчёт'],
+    hit: 'есть конкретное дело — репост',
+    miss: 'пустой призыв — показуха',
+  },
+  unemployed: {
+    keywords: ['ваканс', 'работ', 'цзн', 'сокращен', 'обучен'],
+    hit: 'вакансия или программа — сохраню',
+    miss: 'мотивашка без контактов — бесит',
+  },
+  urban_mass: {
+    keywords: ['ижевск', 'дорог', 'троллейбус', 'цен', 'жкх', 'транспорт'],
+    hit: 'ну про город и быт — норм',
+    miss: 'идеология и длиннота — листаю',
   },
 }
 
 function hashJitter(seed: string, min: number, max: number): number {
   let h = 0
   for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) | 0
-  const span = max - min + 1
-  return min + (Math.abs(h) % span)
+  return min + (Math.abs(h) % (max - min + 1))
 }
 
 function pick<T>(arr: T[], seed: string): T {
@@ -133,46 +179,228 @@ function pick<T>(arr: T[], seed: string): T {
 }
 
 function isPreset(id: AudienceSegmentId): id is PresetSegmentId {
-  return id in SEGMENT_WANTS
+  return isPresetSegment(id)
+}
+
+function fillTpl(template: string, vars: Record<string, string>): string {
+  return template.replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? '')
+}
+
+function maybeFiller(profile: UdmurtiaVoiceProfile | null, seed: string): string {
+  if (!profile?.fillers.length) return ''
+  return hashJitter(seed, 0, 2) === 0 ? `${pick(profile.fillers, seed)} ` : ''
+}
+
+function voiceFor(portrait: NeuroPortrait): UdmurtiaVoiceProfile | null {
+  return isPresetSegment(portrait.segmentId) ? getVoiceProfile(portrait.segmentId) : null
+}
+
+export function stylizeForSegment(portrait: NeuroPortrait, plain: string, seed: string): string {
+  const profile = voiceFor(portrait)
+  if (!profile) return plain
+  const filler = maybeFiller(profile, seed)
+  const lower = plain.toLowerCase()
+  if (profile.slang.some((s) => lower.includes(s))) return `${filler}${plain}`
+  return `${filler}${plain}`
+}
+
+function firstSentence(text: string): string {
+  const trimmed = text.trim()
+  const match = trimmed.match(/^(.+?[.!?…])\s/s) ?? trimmed.match(/^(.{20,90})/s)
+  const s = (match?.[1] ?? trimmed).trim().replace(/\s+/g, ' ')
+  return s.length > 100 ? `${s.slice(0, 97)}…` : s
+}
+
+function quoteFragment(text: string, keyword: string): string | null {
+  const lower = text.toLowerCase()
+  const idx = lower.indexOf(keyword.toLowerCase())
+  if (idx < 0) return null
+  const start = Math.max(0, idx - 25)
+  const end = Math.min(text.length, idx + keyword.length + 35)
+  let frag = text.slice(start, end).trim().replace(/\s+/g, ' ')
+  if (start > 0) frag = `…${frag}`
+  if (end < text.length) frag = `${frag}…`
+  return `«${frag}»`
+}
+
+function findOfficialFragment(text: string): string | null {
+  for (const m of OFFICIAL_MARKERS) {
+    const q = quoteFragment(text, m)
+    if (q) return q
+  }
+  return null
 }
 
 function cityMentioned(portrait: NeuroPortrait, lower: string): boolean {
   return lower.includes(portrait.city.toLowerCase())
 }
 
-export function portraitScoreBias(portrait: NeuroPortrait, ctx: HeuristicCtx): {
-  engagement: number
-  trust: number
-  relevance: number
-} {
-  let engagement = 0
-  let trust = 0
-  let relevance = 0
-  const seed = portrait.id
+interface FormulationRead {
+  hookedBy: string | null
+  turnedOffBy: string | null
+  selfLink: string
+  livedHighlights: string[]
+  livedMissing: string[]
+}
 
-  engagement += hashJitter(seed + 'e', -8, 8)
-  trust += hashJitter(seed + 't', -6, 6)
-  relevance += hashJitter(seed + 'r', -7, 7)
+function matchPortraitKeyword(portrait: NeuroPortrait, ctx: HeuristicCtx, minLen = 5): string | null {
+  for (const pain of portrait.painPoints) {
+    const key = pain.toLowerCase().slice(0, Math.min(14, pain.length))
+    if (key.length >= minLen && ctx.lower.includes(key)) return pain
+  }
+  for (const val of portrait.values) {
+    const key = val.toLowerCase().slice(0, Math.min(12, val.length))
+    if (key.length >= minLen && ctx.lower.includes(key)) return val
+  }
+  const occ = portrait.occupation.toLowerCase().slice(0, 10)
+  if (occ.length >= minLen && ctx.lower.includes(occ)) return portrait.occupation
+  return null
+}
+
+function readFormulations(portrait: NeuroPortrait, ctx: HeuristicCtx): FormulationRead {
+  const livedHighlights: string[] = []
+  const livedMissing: string[] = []
+  let hookedBy: string | null = null
+  let turnedOffBy: string | null = null
+  let selfLink = 'Пока не понимаю, при чём тут я'
+
+  const opener = firstSentence(ctx.text)
+  const personalHit = matchPortraitKeyword(portrait, ctx)
+  if (personalHit) {
+    const q = quoteFragment(ctx.text, personalHit) ?? `«${personalHit}»`
+    hookedBy = hookedBy ?? q
+    livedHighlights.push(`узнал себя — ${personalHit.toLowerCase()}, жиза`)
+    selfLink = `ну типа это про то чем я живу — ${personalHit.toLowerCase()}`
+  }
 
   if (cityMentioned(portrait, ctx.lower)) {
-    relevance += 14
-    trust += 6
+    const q = quoteFragment(ctx.text, portrait.city) ?? `«${portrait.city}»`
+    hookedBy = q
+    livedHighlights.push(`мой ${portrait.city} — норм, про мои улицы`)
+    selfLink = `это про ${portrait.city} где я живу, не абстрактная республика`
+  } else if (ctx.localHits.length > 0) {
+    const hit = ctx.localHits.find((h) => ctx.lower.includes(h)) ?? ctx.localHits[0]
+    hookedBy = quoteFragment(ctx.text, hit) ?? `«${hit}»`
+    livedHighlights.push(`узнаю удмуртию в тексте — не шаблон`)
+    selfLink = 'пишут про нашу удмуртию, не про любой регион'
   }
 
-  if (ctx.lower.includes(portrait.favoritePlace.toLowerCase().slice(0, 8))) {
-    relevance += 8
+  if (portrait.segmentId === 'rural' && !ctx.lower.includes('сел') && !ctx.lower.includes('дерев') && ctx.lower.includes('ижевск')) {
+    turnedOffBy = quoteFragment(ctx.text, 'ижевск') ?? '«Ижевск»'
+    livedMissing.push('опять только ижевск — я в селе, далеко')
+    selfLink = 'написано для ижевчан, а я в сельской удмуртии'
   }
 
-  const occ = portrait.occupation.toLowerCase()
-  if (occ.split(/\s+/).some((w) => w.length > 4 && ctx.lower.includes(w.slice(0, 5)))) {
-    relevance += 5
+  if (portrait.segmentId === 'udmurt_speaker') {
+    const udmurt = ['вожкы', 'удмурт', 'бёрдо', 'бердо', 'пельме', 'вотсин']
+    const found = udmurt.find((w) => ctx.lower.includes(w))
+    if (found) {
+      hookedBy = quoteFragment(ctx.text, found) ?? hookedBy
+      livedHighlights.push('вожкы! слышу свой код, не галочка')
+      selfLink = 'это про мою идентичность, ар уды'
+    } else {
+      livedMissing.push('ни слова по-нашему — чужой тон, обидно')
+      selfLink = 'читаю про культуру, но себя не слышу'
+    }
   }
 
-  if (portrait.age < 20 && ctx.words > 150) engagement -= 6
-  if (portrait.age > 55 && ctx.words > 120) trust -= 5
-  if (portrait.age > 55 && ctx.paragraphs >= 2) trust += 4
+  if (isPreset(portrait.segmentId) && SEGMENT_SELF[portrait.segmentId]) {
+    const seg = SEGMENT_SELF[portrait.segmentId]!
+    const found = seg.keywords.find((w) => ctx.lower.includes(w))
+    if (found) {
+      hookedBy = quoteFragment(ctx.text, found) ?? hookedBy
+      livedHighlights.push(seg.hit)
+      if (selfLink.startsWith('Пока')) selfLink = `Читаю и думаю: да, это про людей как я`
+    } else if (!['rural', 'udmurt_speaker'].includes(portrait.segmentId)) {
+      livedMissing.push(seg.miss)
+      if (selfLink.startsWith('Пока') || selfLink.includes('как я')) {
+        selfLink = `Не вижу себя в этом посте — ${seg.miss.toLowerCase()}`
+      }
+    }
+  }
 
-  return { engagement, trust, relevance }
+  if (portrait.segmentId === 'kindergarten_parent') {
+    const daycare = ['детсад', 'дошкольн', 'малыш', 'садик', 'ясли']
+    const found = daycare.find((w) => ctx.lower.includes(w))
+    if (found) {
+      hookedBy = quoteFragment(ctx.text, found) ?? hookedBy
+      livedHighlights.push('мамочки, про садик/малыша — моя тема')
+      selfLink = 'пишут про то чем живу каждый день — ребёнок'
+    } else {
+      livedMissing.push('не про малыша — тема мимо')
+    }
+  }
+
+  const official = findOfficialFragment(ctx.text)
+  if (official && ['school', 'student', 'worker', 'senior', 'rural'].includes(portrait.segmentId)) {
+    turnedOffBy = official
+    livedMissing.push(`${official} — канцелярит, не как живой человек пишет`)
+    if (selfLink.startsWith('Пока') || selfLink.startsWith('ну типа')) selfLink = 'как из пресс-релиза, не про мою жизнь'
+  }
+
+  if (ctx.federalHits.length > 0) {
+    const fed = ctx.federalHits[0]
+    turnedOffBy = quoteFragment(ctx.text, fed) ?? turnedOffBy
+    livedMissing.push(`«${fed}» — из москвы, не из нашей республики`)
+  }
+
+  if (!hookedBy && opener.length > 15 && livedHighlights.length === 0) {
+    if (['student', 'young_pro', 'parent'].includes(portrait.segmentId)) {
+      hookedBy = `«${opener}»`
+      livedHighlights.push('первая фраза зацепила — дочитаю')
+    }
+  }
+
+  if (portrait.age < 22 && ctx.words > 180) {
+    turnedOffBy = turnedOffBy ?? `«${firstSentence(ctx.text).slice(0, 40)}…»`
+    livedMissing.push('слишком много букв — в ленте не дочитываю, пролистну')
+    selfLink = 'некогда вчитываться — формат не для меня'
+  }
+
+  if (portrait.age > 55) {
+    const slang = ['кринж', 'имба', 'рофл', 'чел', 'лол']
+    const s = slang.find((w) => ctx.lower.includes(w))
+    if (s) {
+      turnedOffBy = quoteFragment(ctx.text, s) ?? turnedOffBy
+      livedMissing.push(`Слово «${s}» — молодёжное, мне непонятно и отталкивает`)
+    }
+  }
+
+  if (livedHighlights.length === 0 && livedMissing.length === 0) {
+    livedMissing.push('Прочитал — не нашёл, где тут я и моя повседневность')
+  }
+
+  return { hookedBy, turnedOffBy, selfLink, livedHighlights, livedMissing }
+}
+
+function readingScene(portrait: NeuroPortrait): string {
+  if (isPreset(portrait.segmentId)) {
+    const tpl = VOICE_REACTION_TEMPLATES[portrait.segmentId]
+    const pub = portrait.localPublics?.[0]
+    const scene = pick(tpl.scene, portrait.id + 'scene')
+    return pub ? `${scene} (${pub})` : scene
+  }
+  const ch = portrait.channels[0] ?? 'соцсети'
+  return `Увидел в ${ch}`
+}
+
+function actionVerdict(
+  portrait: NeuroPortrait,
+  overall: number,
+  ctx: HeuristicCtx,
+): { wouldShare: boolean; wouldComment: boolean; wouldScrollPast: boolean; action: string } {
+  const wouldScrollPast = overall < 40
+  const wouldComment = ctx.hasQuestion && overall >= 50
+  const wouldShare = overall >= 70 && (ctx.localHits.length > 0 || cityMentioned(portrait, ctx.lower))
+
+  let action: string
+  if (wouldScrollPast) action = 'пролистает, даже не дочитав'
+  else if (wouldShare) action = 'сохранит и перешлёт знакомым'
+  else if (wouldComment) action = 'напишет в комментариях'
+  else if (overall >= 60) action = 'дочитает и запомнит'
+  else action = 'дочитает без эмоций и закроет'
+
+  return { wouldShare, wouldComment, wouldScrollPast, action }
 }
 
 function emotionFor(
@@ -182,103 +410,149 @@ function emotionFor(
 ): string {
   const pool = EMOTIONS[sentiment]
   let emotion = pick([...pool], portrait.id)
-
   if (ctx.federalHits.length > 0 && portrait.segmentId !== 'young_pro') {
     emotion = sentiment === 'negative' ? 'недоверие' : 'настороженность'
   }
   if (cityMentioned(portrait, ctx.lower) && sentiment === 'positive') {
     emotion = pick(['гордость', 'интерес', 'радость'], portrait.name)
   }
-  if (portrait.segmentId === 'kindergarten_parent' && sentiment === 'negative') {
-    emotion = pick(['тревога', 'настороженность'], portrait.id)
-  }
-
   return emotion
+}
+
+export function portraitScoreBias(portrait: NeuroPortrait, ctx: HeuristicCtx): {
+  engagement: number
+  trust: number
+  relevance: number
+} {
+  let engagement = hashJitter(portrait.id + 'e', -8, 8)
+  let trust = hashJitter(portrait.id + 't', -6, 6)
+  let relevance = hashJitter(portrait.id + 'r', -7, 7)
+
+  if (cityMentioned(portrait, ctx.lower)) {
+    relevance += 14
+    trust += 6
+  }
+  if (ctx.lower.includes(portrait.favoritePlace.toLowerCase().slice(0, 8))) relevance += 8
+  if (portrait.age < 20 && ctx.words > 150) engagement -= 6
+  if (portrait.age > 55 && ctx.words > 120) trust -= 5
+
+  return { engagement, trust, relevance }
+}
+
+function voicedSelfLink(portrait: NeuroPortrait, read: FormulationRead): string {
+  if (!isPreset(portrait.segmentId)) return read.selfLink
+  const tpl = VOICE_REACTION_TEMPLATES[portrait.segmentId]
+  const template = pick(tpl.selfLink, portrait.id + 'self')
+  return fillTpl(template, { city: portrait.city })
+}
+
+function voicedHook(
+  portrait: NeuroPortrait,
+  quote: string | null,
+  positive: boolean,
+): string | null {
+  if (!quote || !isPreset(portrait.segmentId)) return quote
+  const tpl = VOICE_REACTION_TEMPLATES[portrait.segmentId]
+  const pool = positive ? tpl.hookPositive : tpl.hookNegative
+  return fillTpl(pick(pool, portrait.id + (positive ? 'hp' : 'hn')), { quote })
+}
+
+function voicedAction(portrait: NeuroPortrait, verdict: ReturnType<typeof actionVerdict>, overall: number): string {
+  if (!isPreset(portrait.segmentId)) {
+    if (verdict.wouldScrollPast) return 'Пролистаю — не трачу время.'
+    if (verdict.wouldShare) return 'Скину знакомым — им тоже актуально.'
+    if (verdict.wouldComment) return 'Могу написать в комментариях.'
+    if (overall >= 55) return 'Дочитаю и пойду дальше.'
+    return 'Дочитаю без эмоций.'
+  }
+  const tpl = VOICE_REACTION_TEMPLATES[portrait.segmentId]
+  if (verdict.wouldScrollPast) return pick(tpl.actionScroll, portrait.id + 'scroll')
+  if (verdict.wouldShare) return pick(tpl.actionShare, portrait.id + 'share')
+  if (verdict.wouldComment) return pick(tpl.actionComment, portrait.id + 'comment')
+  if (overall >= 55) return pick(tpl.actionRead, portrait.id + 'read')
+  return pick(tpl.actionRead, portrait.id + 'read2')
 }
 
 export function buildPersonaNarrative(
   portrait: NeuroPortrait,
   sentiment: 'positive' | 'neutral' | 'negative',
   overall: number,
-  missing: string[],
-  highlights: string[],
+  _missing: string[],
+  _highlights: string[],
   ctx: HeuristicCtx,
 ): PersonaNarrative {
   const emotion = emotionFor(sentiment, portrait, ctx)
-  const preset = isPreset(portrait.segmentId) ? portrait.segmentId : null
+  const readingContext = readingScene(portrait)
+  const read = readFormulations(portrait, ctx)
+  const verdict = actionVerdict(portrait, overall, ctx)
+  const profile = voiceFor(portrait)
 
-  const wants = preset
-    ? pick(SEGMENT_WANTS[preset], portrait.id + 'w')
-    : `понять, зачем это «${portrait.segmentLabel}» из ${portrait.city}`
+  const wants = stylizeForSegment(portrait, voicedSelfLink(portrait, read), portrait.id + 'wants')
 
-  const impressions = preset ? SEGMENT_IMPRESSIONS[preset] : {
-    good: ['Вроде про нас.', 'Можно дочитать.'],
-    mid: ['Непонятно, моё ли это.', 'Середнячок.'],
-    bad: ['Не про меня.', 'Пролистаю.'],
+  const hookedVoice = voicedHook(portrait, read.hookedBy, true)
+  const turnedVoice = voicedHook(portrait, read.turnedOffBy, false)
+
+  const firstImpression = hookedVoice
+    ? `${readingContext}. ${hookedVoice}`
+    : turnedVoice
+      ? `${readingContext}. ${turnedVoice}`
+      : stylizeForSegment(
+          portrait,
+          pick(
+            isPreset(portrait.segmentId)
+              ? VOICE_REACTION_TEMPLATES[portrait.segmentId].scene.map((s) => `${s}… ну не ясно пока, моё ли`)
+              : [`${readingContext}. Не ясно, моё ли это`],
+            portrait.id + 'fi',
+          ),
+          portrait.id + 'fi',
+        )
+
+  const actionLine = voicedAction(portrait, verdict, overall)
+
+  const summary = [
+    `${portrait.name}, ${portrait.age}, ${portrait.city} — ${verdict.action}.`,
+    hookedVoice ? `Зацепило: ${hookedVoice}` : null,
+    turnedVoice ? `Оттолкнуло: ${turnedVoice}` : null,
+    wants,
+  ].filter(Boolean).join(' ')
+
+  const monoParts: string[] = [readingContext + '.']
+
+  if (hookedVoice) {
+    monoParts.push(hookedVoice + '.')
+    if (read.livedHighlights[0]) {
+      monoParts.push(stylizeForSegment(portrait, read.livedHighlights[0], portrait.id + 'hl'))
+    }
+  } else if (turnedVoice) {
+    monoParts.push(turnedVoice + '.')
+  } else {
+    monoParts.push(firstImpression)
   }
 
-  const firstImpression =
-    sentiment === 'positive'
-      ? pick(impressions.good, portrait.id + 'g')
-      : sentiment === 'neutral'
-        ? pick(impressions.mid, portrait.id + 'm')
-        : pick(impressions.bad, portrait.id + 'b')
+  monoParts.push(wants + '.')
+  monoParts.push(actionLine)
 
-  const summary = buildSummary(portrait, sentiment, overall, emotion, firstImpression)
-  const innerMonologue = buildInnerMonologue(portrait, emotion, wants, missing, highlights, overall, ctx)
-
-  return { emotion, wants, firstImpression, summary, innerMonologue }
-}
-
-function buildSummary(
-  portrait: NeuroPortrait,
-  sentiment: 'positive' | 'neutral' | 'negative',
-  overall: number,
-  emotion: string,
-  firstImpression: string,
-): string {
-  const who = `${portrait.name}, ${portrait.age} лет, ${portrait.city}`
-  if (sentiment === 'positive') {
-    return `${who} — ${emotion} (${overall}%): ${firstImpression}`
-  }
-  if (sentiment === 'neutral') {
-    return `${who} — ${emotion}, сомневается (${overall}%): ${firstImpression}`
-  }
-  return `${who} — ${emotion}, отстраивается (${overall}%): ${firstImpression}`
-}
-
-function buildInnerMonologue(
-  portrait: NeuroPortrait,
-  emotion: string,
-  wants: string,
-  missing: string[],
-  highlights: string[],
-  score: number,
-  ctx: HeuristicCtx,
-): string {
-  const parts: string[] = []
-
-  parts.push(`Я ${portrait.name}, ${portrait.occupation.toLowerCase()}, живу в ${portrait.city}.`)
-
-  parts.push(`Первое впечатление — ${emotion}.`)
-
-  if (highlights.length) {
-    parts.push(highlights[0].endsWith('.') ? highlights[0] : `${highlights[0]}.`)
+  if (profile && portrait.localMeme && sentiment === 'positive' && hashJitter(portrait.id, 0, 3) === 0) {
+    monoParts.push(stylizeForSegment(portrait, `кстати напомнило ${portrait.localMeme}`, portrait.id + 'meme'))
   }
 
-  if (missing.length) {
-    parts.push(`Но мне не хватает: ${missing[0].toLowerCase()}.`)
+  const livedHighlights = read.livedHighlights.map((h, i) =>
+    stylizeForSegment(portrait, h, portrait.id + 'lh' + i),
+  )
+  const livedMissing = read.livedMissing.map((m, i) =>
+    stylizeForSegment(portrait, m, portrait.id + 'lm' + i),
+  )
+
+  return {
+    emotion,
+    wants,
+    firstImpression,
+    readingContext,
+    hookedBy: read.hookedBy,
+    turnedOffBy: read.turnedOffBy,
+    summary,
+    innerMonologue: monoParts.join(' '),
+    livedHighlights,
+    livedMissing,
   }
-
-  parts.push(`Хочу от этого поста: ${wants.charAt(0).toLowerCase()}${wants.slice(1)}.`)
-
-  if (score < 40) {
-    parts.push('Скорее пролистаю — чувствую, что пишут не для таких, как я.')
-  } else if (score >= 70 && ctx.hasQuestion) {
-    parts.push('Могу ответить в комментариях, если вопрос по делу.')
-  } else if (score >= 70) {
-    parts.push('Могу сохранить или переслать тем, кому актуально.')
-  }
-
-  return parts.join(' ')
 }

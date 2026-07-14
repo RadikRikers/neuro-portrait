@@ -1,3 +1,4 @@
+import { isPresetSegment } from '../data/udmurtia-voices'
 import type {
   AudienceSegment,
   AudienceSegmentId,
@@ -5,12 +6,13 @@ import type {
   ImageAnalysis,
   NeuroPortrait,
   PersonaReaction,
+  PresetSegmentId,
   TextGap,
   TextTestResult,
   UdmurtiaZone,
 } from '../types'
 import { UDMURTIA_ZONES, ZONE_KEYWORDS } from '../data/segments'
-import { buildPersonaNarrative, portraitScoreBias } from './persona-voice'
+import { buildPersonaNarrative, filterLivedPhrases, portraitScoreBias } from './persona-voice'
 import { getSegmentById, isCustomSegmentId } from './segment-registry'
 
 const LOCAL_MARKERS = [
@@ -31,6 +33,26 @@ const CTA_PATTERNS = [
 ]
 
 const QUESTION_PATTERN = /\?/
+
+const INFO_MARKERS = [
+  'сообщаем', 'информируем', 'напоминаем', 'сообщили', 'информир',
+  'состоялся', 'состоится', 'состоялось', 'пройдёт', 'пройдет', 'пройд',
+  'открылся', 'откроется', 'запущен', 'запуск', 'объявлен', 'объявля',
+  'вниманию', 'жител', 'планируется', 'ожидается', 'итоги', 'результат',
+  'принято', 'решение', 'порядок', 'график', 'расписание', 'адрес',
+  'напоминаем', 'доводим', 'сообщает', 'по информации',
+]
+
+function isInformationalContent(type: ContentType): boolean {
+  return type === 'post' || type === 'article' || type === 'other'
+}
+
+function hasInfoQualities(ctx: HeuristicContext): boolean {
+  const hasMarker = INFO_MARKERS.some((m) => ctx.lower.includes(m))
+  const hasDate = /\d{1,2}[.\-/]\d{1,2}/.test(ctx.text) || /\d{4}\s*г/.test(ctx.lower)
+  const hasPlace = ctx.localHits.length > 0 || ctx.mentionedZones.length > 0
+  return hasMarker || (hasDate && ctx.words >= 25) || (hasPlace && ctx.words >= 35)
+}
 
 interface HeuristicContext {
   text: string
@@ -112,7 +134,14 @@ function scoreForCustomSegment(ctx: HeuristicContext, segment: AudienceSegment) 
     }
   }
 
-  if (!ctx.hasCta) missing.push(segment.engagementTriggers[0] ? `Нет ${segment.engagementTriggers[0].toLowerCase()}` : 'Нет призыва к действию')
+  if (ctx.hasCta && !isInformationalContent(ctx.contentType)) {
+    engagement += 6
+  } else if (!isInformationalContent(ctx.contentType) && !ctx.hasCta) {
+    missing.push(segment.engagementTriggers[0] ? `Нет ${segment.engagementTriggers[0].toLowerCase()}` : 'Нет призыва к действию')
+  } else if (isInformationalContent(ctx.contentType) && hasInfoQualities(ctx)) {
+    highlights.push('Понятный информационный формат')
+    trust += 6
+  }
   if (ctx.hasQuestion) engagement += 8
 
   const midAge = parseAgeMid(segment.ageRange)
@@ -161,21 +190,38 @@ function scoreForSegment(
 
   if (ctx.hasQuestion) {
     engagement += 10
-    highlights.push('Есть вопрос — хочется ответить')
-  } else if (['school', 'student', 'parent', 'kindergarten_parent'].includes(segmentId)) {
+    highlights.push(
+      isInformationalContent(ctx.contentType)
+        ? 'Вопрос уместен даже в инфопосте'
+        : 'Есть вопрос — хочется ответить',
+    )
+  } else if (
+    !isInformationalContent(ctx.contentType) &&
+    ['school', 'student', 'parent', 'kindergarten_parent'].includes(segmentId)
+  ) {
     missing.push('Нет вопроса или приглашения к диалогу')
     engagement -= 8
   }
 
   if (ctx.hasCta) {
-    engagement += 8
-    trust += 5
-  } else {
+    if (!isInformationalContent(ctx.contentType)) {
+      engagement += 8
+      trust += 5
+      highlights.push('Есть призыв к действию')
+    }
+  } else if (!isInformationalContent(ctx.contentType)) {
     missing.push('Нет понятного призыва к действию')
     engagement -= 5
+  } else if (hasInfoQualities(ctx)) {
+    highlights.push('Инфопост по делу — CTA не обязателен')
+    trust += 8
+    engagement += 4
+  } else {
+    missing.push('Неясно, о чём новость: добавьте что / где / когда')
+    trust -= 6
   }
 
-  const lengthRules: Record<AudienceSegmentId, { ideal: [number, number]; penalty: string }> = {
+  const lengthRules: Partial<Record<PresetSegmentId, { ideal: [number, number]; penalty: string }>> = {
     school: { ideal: [30, 120], penalty: 'Для школьников текст слишком длинный или слишком короткий' },
     student: { ideal: [50, 200], penalty: 'Студентам нужен текст средней длины с конкретикой' },
     young_pro: { ideal: [60, 250], penalty: 'Молодым специалистам нужна структура и факты' },
@@ -185,12 +231,59 @@ function scoreForSegment(
     senior: { ideal: [40, 140], penalty: 'Пенсионерам нужны короткие абзацы и ясность' },
     rural: { ideal: [40, 160], penalty: 'Сельским жителям нужен простой понятный текст' },
     udmurt_speaker: { ideal: [50, 200], penalty: 'Нужен баланс: русский + удмуртский контекст' },
+    svo_participant: { ideal: [30, 140], penalty: 'Бойцам нужен короткий текст по делу' },
+    svo_veteran: { ideal: [40, 160], penalty: 'Ветеранам нужна конкретика без пафоса' },
+    svo_family_spouse: { ideal: [40, 180], penalty: 'Семьям участников нужен понятный тёплый текст' },
+    svo_family_parent: { ideal: [40, 150], penalty: 'Родителям бойцов нужна ясность без политики' },
+    opposition: { ideal: [60, 280], penalty: 'Критической аудитории нужны факты и аргументы' },
+    patriot_loyalist: { ideal: [40, 200], penalty: 'Патриотической аудитории нужен уважительный тон' },
+    entrepreneur: { ideal: [50, 220], penalty: 'Предпринимателям нужны цифры и сроки' },
+    blogger: { ideal: [25, 120], penalty: 'Блогерам нужен короткий хук' },
+    urban_mass: { ideal: [35, 160], penalty: 'Массовой аудитории нужен короткий городской текст' },
   }
-
-  const rule = lengthRules[segmentId]
+  const defaultLength = { ideal: [40, 200] as [number, number], penalty: 'Текст не подходит по длине для этой аудитории' }
+  const rule = isPresetSegment(segmentId) ? (lengthRules[segmentId] ?? defaultLength) : defaultLength
   if (ctx.words < rule.ideal[0] || ctx.words > rule.ideal[1]) {
     missing.push(rule.penalty)
     engagement -= ctx.words > rule.ideal[1] ? 12 : 6
+  }
+
+  const svoKw = ['сво', 'участник', 'ветеран', 'мобилиз', 'контрактник', 'фронт', 'боев', 'военнослуж', 'семьи бойцов', 'льгот']
+  if (['svo_participant', 'svo_veteran', 'svo_family_spouse', 'svo_family_parent'].includes(segmentId)) {
+    if (svoKw.some((w) => ctx.lower.includes(w))) {
+      relevance += 14
+      trust += 8
+      highlights.push('Учтена тема СВО и семей')
+    } else {
+      relevance -= 8
+    }
+    const pafos = ['героическ', 'бессмертн', 'слава', 'подвиг ради']
+    if (pafos.some((w) => ctx.lower.includes(w)) && !svoKw.some((w) => ctx.lower.includes(w))) {
+      missing.push('Пафос без конкретики про семьи и помощь')
+      trust -= 10
+    }
+  }
+
+  if (segmentId === 'opposition') {
+    const official = ['в рамках', 'масштабн', 'федеральн', 'инновац']
+    if (official.some((w) => ctx.lower.includes(w))) {
+      trust -= 14
+      missing.push('Официоз — критическая аудитория отстроится')
+    }
+    if (/\d+/.test(ctx.text) || ctx.hasQuestion) trust += 6
+  }
+
+  if (segmentId === 'patriot_loyalist') {
+    const patriot = ['память', 'победа', 'герой', 'сво', 'ветеран', 'защитник']
+    if (patriot.some((w) => ctx.lower.includes(w))) {
+      relevance += 12
+      engagement += 8
+    }
+    const cynical = ['нейтрал', 'всё равно', 'цинич']
+    if (cynical.some((w) => ctx.lower.includes(w))) {
+      missing.push('Нейтральный/циничный тон — не для этой аудитории')
+      engagement -= 12
+    }
   }
 
   if (segmentId === 'udmurt_speaker') {
@@ -292,8 +385,15 @@ function scoreForSegment(
   }
 
   if (!highlights.some((h) => h.includes('триггер'))) {
-    missing.push(`Нет того, что цепляет ${segment.label.toLowerCase()}: ${segment.engagementTriggers.slice(0, 2).join(' / ')}`)
-    engagement -= 5
+    if (isInformationalContent(ctx.contentType)) {
+      if (ctx.words < 30) {
+        missing.push('Инфопост слишком короткий — не раскрыта суть')
+        engagement -= 4
+      }
+    } else {
+      missing.push(`Нет того, что цепляет ${segment.label.toLowerCase()}: ${segment.engagementTriggers.slice(0, 2).join(' / ')}`)
+      engagement -= 5
+    }
   }
 
   return { engagement, trust, relevance, missing, highlights }
@@ -321,6 +421,14 @@ function finalizePortraitReaction(
     ctx,
   )
 
+  const verdict = overall < 40
+    ? { wouldScrollPast: true, wouldComment: false, wouldShare: false }
+    : {
+        wouldScrollPast: false,
+        wouldComment: ctx.hasQuestion && overall >= 50,
+        wouldShare: overall >= 70 && (ctx.localHits.length > 0 || ctx.lower.includes(portrait.city.toLowerCase())),
+      }
+
   return {
     engagementScore: engagement,
     trustScore: trust,
@@ -330,13 +438,14 @@ function finalizePortraitReaction(
     emotion: narrative.emotion,
     wants: narrative.wants,
     firstImpression: narrative.firstImpression,
+    readingContext: narrative.readingContext,
+    hookedBy: narrative.hookedBy,
+    turnedOffBy: narrative.turnedOffBy,
     summary: narrative.summary,
     innerMonologue: narrative.innerMonologue,
-    wouldScrollPast: overall < 40,
-    wouldComment: ctx.hasQuestion && overall >= 50,
-    wouldShare: overall >= 70 && ctx.localHits.length > 0,
-    missingForMe: base.missing,
-    highlights: base.highlights,
+    ...verdict,
+    missingForMe: filterLivedPhrases(narrative.livedMissing).slice(0, 4),
+    highlights: filterLivedPhrases(narrative.livedHighlights).slice(0, 3),
   }
 }
 
@@ -384,7 +493,7 @@ function detectGaps(ctx: HeuristicContext, reactions: PersonaReaction[]): TextGa
     })
   }
 
-  if (!ctx.hasCta) {
+  if (!ctx.hasCta && !isInformationalContent(ctx.contentType)) {
     gaps.push({
       id: 'cta',
       severity: 'medium',
@@ -392,6 +501,17 @@ function detectGaps(ctx: HeuristicContext, reactions: PersonaReaction[]): TextGa
       title: 'Нет призыва к действию',
       description: 'Аудитория не понимает, что делать дальше.',
       suggestion: 'Добавьте вопрос, опрос, ссылку или приглашение написать в комментариях.',
+    })
+  }
+
+  if (isInformationalContent(ctx.contentType) && !hasInfoQualities(ctx)) {
+    gaps.push({
+      id: 'info-clarity',
+      severity: 'medium',
+      category: 'Информационный пост',
+      title: 'Суть новости неочевидна',
+      description: 'Для инфопоста важны факты: что произошло, где, когда.',
+      suggestion: 'Добавьте конкретику: дату, место, суть события. Призыв к действию не обязателен.',
     })
   }
 
@@ -414,7 +534,12 @@ function detectGaps(ctx: HeuristicContext, reactions: PersonaReaction[]): TextGa
 function buildRecommendations(gaps: TextGap[], ctx: HeuristicContext, images: ImageAnalysis[]): string[] {
   const recs = gaps.map((g) => g.suggestion)
   if (ctx.words > 200) recs.push('Сократите текст: принцип «один абзац — одна мысль».')
-  if (!ctx.hasQuestion) recs.push('Добавьте вопрос в конце — это поднимает комментарии.')
+  if (!ctx.hasQuestion && !isInformationalContent(ctx.contentType)) {
+    recs.push('Добавьте вопрос в конце — это поднимает комментарии.')
+  }
+  if (isInformationalContent(ctx.contentType) && !hasInfoQualities(ctx)) {
+    recs.push('Для инфопоста: что / где / когда — без обязательного призыва «подписывайтесь».')
+  }
   if (ctx.localHits.length < 2) recs.push('Усильте локальность: 2–3 конкретных маркера Удмуртии.')
   for (const img of images) {
     for (const w of img.warnings) recs.push(`Визуал (${img.fileName}): ${w}`)

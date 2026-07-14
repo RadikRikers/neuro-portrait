@@ -37,6 +37,14 @@ export function exportTestReportTxt(result: TextTestResult): string {
     `Зоны: ${zoneNames(result.zones)}`,
     `Тип контента: ${result.contentType}`,
     `Анализ: ${result.source === 'ollama' ? 'Ollama + эвристика' : 'Эвристика (работает на Vercel)'}`,
+    ...(result.analysisMeta
+      ? [
+          `Аудитория: ${result.analysisMeta.segmentCount} сегментов × ${result.analysisMeta.portraitsPerSegment} портр.`,
+          result.analysisMeta.limited
+            ? `Выборка: ${result.analysisMeta.analyzedCount} из ${result.analysisMeta.poolSize} портретов`
+            : `Портретов в тесте: ${result.analysisMeta.poolSize}`,
+        ]
+      : []),
     '',
     '--- СВОДКА ---',
     `Общий отклик:      ${result.overallScore}%`,
@@ -67,8 +75,11 @@ export function exportTestReportTxt(result: TextTestResult): string {
       '',
       `${r.name} (${r.segmentLabel}, ${r.age} лет) — ${r.overallScore}%`,
       `Эмоция: ${r.emotion}`,
-      `Хочет: ${r.wants}`,
-      `Первое впечатление: «${r.firstImpression}»`,
+      ...(r.readingContext ? [`Где увидел: ${r.readingContext}`] : []),
+      `Примеряет на себя: ${r.wants}`,
+      ...(r.hookedBy ? [`Зацепило: ${r.hookedBy}`] : []),
+      ...(r.turnedOffBy ? [`Оттолкнуло: ${r.turnedOffBy}`] : []),
+      `Первое впечатление: ${r.firstImpression}`,
       `Прогноз: ${r.summary}`,
       `Мысли: ${r.innerMonologue}`,
       `Вовлечённость ${r.engagementScore}% | Релевантность ${r.relevanceScore}% | Доверие ${r.trustScore}%`,
@@ -77,8 +88,8 @@ export function exportTestReportTxt(result: TextTestResult): string {
         r.wouldComment ? 'прокомментирует' : null,
         r.wouldScrollPast ? 'пролистает' : null,
       ].filter(Boolean).join(', ') || 'нейтрально'}`,
-      `Не хватает: ${r.missingForMe.join('; ') || '—'}`,
-      `Сработало: ${r.highlights.join('; ') || '—'}`,
+      `Оттолкнуло / не нашёл себя: ${r.missingForMe.join('; ') || '—'}`,
+      `Зацепило лично: ${r.highlights.join('; ') || '—'}`,
     )
   }
 

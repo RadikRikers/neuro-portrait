@@ -8,6 +8,37 @@ export type PresetSegmentId =
   | 'senior'
   | 'rural'
   | 'udmurt_speaker'
+  | 'svo_participant'
+  | 'svo_veteran'
+  | 'svo_family_spouse'
+  | 'svo_family_parent'
+  | 'opposition'
+  | 'patriot_loyalist'
+  | 'entrepreneur'
+  | 'public_servant'
+  | 'blogger'
+  | 'teacher'
+  | 'medic'
+  | 'volunteer'
+  | 'unemployed'
+  | 'migrant_worker'
+  | 'believer'
+  | 'urban_mass'
+
+export type SegmentGroupId =
+  | 'youth'
+  | 'family'
+  | 'work'
+  | 'svo'
+  | 'politics'
+  | 'community'
+  | 'culture'
+
+export interface SegmentGroup {
+  id: SegmentGroupId
+  label: string
+  segmentIds: PresetSegmentId[]
+}
 
 export type AudienceSegmentId = PresetSegmentId | `custom_${string}`
 
@@ -20,6 +51,7 @@ export type TestMode = 'single' | 'compare'
 export interface AudienceSegment {
   id: AudienceSegmentId
   label: string
+  group?: SegmentGroupId
   ageRange: string
   description: string
   values: string[]
@@ -45,6 +77,12 @@ export interface NeuroPortrait {
   painPoints: string[]
   languageStyle: string
   channels: string[]
+  /** VK/Telegram паблики, где «сидит» персонаж */
+  localPublics?: string[]
+  /** Местный мем или отсылка из паблика */
+  localMeme?: string
+  /** Слова-паразиты и сленг для живой речи */
+  speechMarkers?: string[]
 }
 
 export interface UploadedImage {
@@ -92,6 +130,9 @@ export interface PersonaReaction {
   emotion: string
   wants: string
   firstImpression: string
+  readingContext?: string
+  hookedBy?: string | null
+  turnedOffBy?: string | null
   summary: string
   innerMonologue: string
   wouldShare: boolean
@@ -99,6 +140,14 @@ export interface PersonaReaction {
   wouldScrollPast: boolean
   missingForMe: string[]
   highlights: string[]
+}
+
+export interface AnalysisMeta {
+  segmentCount: number
+  portraitsPerSegment: number
+  poolSize: number
+  analyzedCount: number
+  limited: boolean
 }
 
 export interface TextTestResult {
@@ -118,6 +167,7 @@ export interface TextTestResult {
   recommendations: string[]
   imageAnalyses: ImageAnalysis[]
   source: 'ollama' | 'heuristic'
+  analysisMeta?: AnalysisMeta
 }
 
 export interface PersonaComparison {

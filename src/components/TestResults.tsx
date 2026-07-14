@@ -1,9 +1,13 @@
-import { UDMURTIA_ZONES } from '../data/segments'
+import { useMemo, useState } from 'react'
+import { CONTENT_TYPES, UDMURTIA_ZONES } from '../data/segments'
 import type { TextTestResult } from '../types'
+import type { AnalysisSettings } from '../utils/analysis-settings'
 import { downloadTextFile, exportTestReportTxt } from '../utils/export-report'
+import { applyReactionView } from '../utils/sort-reactions'
 
 interface TestResultsProps {
   result: TextTestResult
+  reactionSettings: Pick<AnalysisSettings, 'reactionSort' | 'reactionFilter'>
 }
 
 function ScoreRing({ value, label, color }: { value: number; label: string; color: string }) {
@@ -27,9 +31,46 @@ function severityStyle(s: string) {
   return 'border-slate-500/20 bg-surface-3'
 }
 
-export function TestResults({ result }: TestResultsProps) {
+const CONTENT_LABEL: Record<string, string> = Object.fromEntries(
+  CONTENT_TYPES.map((t) => [t.id, t.label]),
+)
+
+const COLLAPSE_THRESHOLD = 8
+const COLLAPSED_COUNT = 6
+
+export function TestResults({ result, reactionSettings }: TestResultsProps) {
+  const [showAllReactions, setShowAllReactions] = useState(false)
+
+  const preview = result.text.trim().slice(0, 280)
+  const truncated = result.text.trim().length > 280
+
+  const visibleReactions = useMemo(
+    () => applyReactionView(
+      result.reactions,
+      reactionSettings.reactionSort,
+      reactionSettings.reactionFilter,
+    ),
+    [result.reactions, reactionSettings.reactionSort, reactionSettings.reactionFilter],
+  )
+
+  const displayedReactions = showAllReactions || visibleReactions.length <= COLLAPSE_THRESHOLD
+    ? visibleReactions
+    : visibleReactions.slice(0, COLLAPSED_COUNT)
+
+  const meta = result.analysisMeta
+
   return (
-    <section className="space-y-5 text-left">
+    <section className="space-y-5 text-left mt-5">
+      <div className="glass rounded-2xl p-4 border border-indigo-500/20">
+        <p className="text-xs text-indigo-300/80 mb-2">
+          3. Результат · {CONTENT_LABEL[result.contentType] ?? result.contentType}
+        </p>
+        <p className="text-xs text-slate-500 mb-1">Проверенный пост:</p>
+        <p className="text-sm text-slate-300 whitespace-pre-wrap leading-relaxed">
+          {preview}{truncated ? '…' : ''}
+        </p>
+      </div>
+
       <div className="glass rounded-2xl p-5">
         <div className="flex flex-wrap items-start justify-between gap-4 mb-5">
           <div>
@@ -41,6 +82,14 @@ export function TestResults({ result }: TestResultsProps) {
               {result.zones.map((z) => UDMURTIA_ZONES.find((u) => u.id === z)?.name ?? z).join(', ')} ·{' '}
               {result.source === 'ollama' ? 'Ollama + эвристика' : 'Эвристический анализ'}
             </p>
+            {meta && (
+              <p className="text-[10px] text-slate-600 mt-1">
+                {meta.segmentCount} сегментов × {meta.portraitsPerSegment} портр.
+                {meta.limited
+                  ? ` · выборка ${meta.analyzedCount} из ${meta.poolSize}`
+                  : ` · полный набор ${meta.poolSize}`}
+              </p>
+            )}
           </div>
           <div className="flex items-center gap-2">
             <div className={`px-3 py-1 rounded-full text-xs font-medium ${
@@ -123,55 +172,89 @@ export function TestResults({ result }: TestResultsProps) {
       )}
 
       <div className="glass rounded-2xl p-5">
-        <h3 className="font-semibold text-white mb-4">Отклик по персонажам</h3>
-        <div className="space-y-4">
-          {result.reactions.map((r) => (
-            <div key={r.portraitId} className="bg-surface-3 rounded-xl p-4 border border-border/60">
-              <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-                <div>
-                  <span className="text-white font-medium">{r.name}</span>
-                  <span className="text-slate-500 text-sm ml-2">{r.segmentLabel}, {r.age} лет</span>
-                </div>
-                <div className="flex items-center gap-3 text-xs">
-                  <span className={sentimentColor(r.sentiment)}>{r.overallScore}%</span>
-                  {r.wouldScrollPast && <span className="text-rose-400">пролистает</span>}
-                  {r.wouldComment && <span className="text-cyan-400">прокомментирует</span>}
-                  {r.wouldShare && <span className="text-emerald-400">поделится</span>}
-                </div>
-              </div>
-
-              <div className="flex flex-wrap gap-2 text-xs mb-2">
-                <span className="px-2 py-0.5 rounded-md bg-indigo-500/15 text-indigo-200">
-                  {r.emotion}
-                </span>
-                <span className="text-slate-500">Хочет: <span className="text-slate-300">{r.wants}</span></span>
-              </div>
-
-              <p className="text-sm text-amber-200/90 mb-2">«{r.firstImpression}»</p>
-              <p className="text-sm text-slate-300 mb-2">{r.summary}</p>
-              <p className="text-sm text-slate-400 italic border-l-2 border-indigo-500/20 pl-3 mb-3">
-                {r.innerMonologue}
-              </p>
-
-              <div className="grid sm:grid-cols-3 gap-2 text-xs mb-2">
-                <span className="text-slate-500">Вовлечённость: <span className="text-cyan-300">{r.engagementScore}%</span></span>
-                <span className="text-slate-500">Релевантность: <span className="text-indigo-300">{r.relevanceScore}%</span></span>
-                <span className="text-slate-500">Доверие: <span className="text-violet-300">{r.trustScore}%</span></span>
-              </div>
-
-              {r.missingForMe.length > 0 && (
-                <div className="text-xs text-amber-300/90">
-                  Не хватает: {r.missingForMe.join(' · ')}
-                </div>
-              )}
-              {r.highlights.length > 0 && (
-                <div className="text-xs text-emerald-400/90 mt-1">
-                  Сработало: {r.highlights.join(' · ')}
-                </div>
-              )}
-            </div>
-          ))}
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
+          <h3 className="font-semibold text-white">Отклик населения</h3>
+          {reactionSettings.reactionFilter !== 'all' && (
+            <span className="text-[10px] text-slate-500">
+              Фильтр: {visibleReactions.length} из {result.reactions.length}
+            </span>
+          )}
         </div>
+        <p className="text-xs text-slate-500 mb-4">
+          Жители примеряют пост на себя: где увидели, что зацепило, что сделают — не оценка текста редактором
+        </p>
+
+        {visibleReactions.length === 0 ? (
+          <p className="text-sm text-slate-500 italic">Нет реакций по выбранному фильтру</p>
+        ) : (
+          <div className="space-y-4">
+            {displayedReactions.map((r) => (
+              <div key={r.portraitId} className="bg-surface-3 rounded-xl p-4 border border-border/60">
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                  <div>
+                    <span className="text-white font-medium">{r.name}</span>
+                    <span className="text-slate-500 text-sm ml-2">{r.segmentLabel}, {r.age} лет</span>
+                  </div>
+                  <div className="flex items-center gap-3 text-xs">
+                    <span className={sentimentColor(r.sentiment)}>{r.overallScore}%</span>
+                    {r.wouldScrollPast && <span className="text-rose-400">пролистает</span>}
+                    {r.wouldComment && <span className="text-cyan-400">прокомментирует</span>}
+                    {r.wouldShare && <span className="text-emerald-400">поделится</span>}
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap gap-2 text-xs mb-2">
+                  <span className="px-2 py-0.5 rounded-md bg-indigo-500/15 text-indigo-200">
+                    {r.emotion}
+                  </span>
+                  {r.readingContext && (
+                    <span className="text-slate-500">{r.readingContext}</span>
+                  )}
+                </div>
+
+                <p className="text-xs text-slate-500 mb-1">Примеряет на себя: <span className="text-slate-300">{r.wants}</span></p>
+                {r.hookedBy && (
+                  <p className="text-sm text-emerald-300/90 mb-1">Зацепило: {r.hookedBy}</p>
+                )}
+                {r.turnedOffBy && (
+                  <p className="text-sm text-rose-300/90 mb-1">Оттолкнуло: {r.turnedOffBy}</p>
+                )}
+                <p className="text-sm text-amber-200/90 mb-2">{r.firstImpression}</p>
+                <p className="text-sm text-slate-300 mb-2">{r.summary}</p>
+                <p className="text-sm text-slate-400 italic border-l-2 border-indigo-500/20 pl-3 mb-3">
+                  {r.innerMonologue}
+                </p>
+
+                <div className="grid sm:grid-cols-3 gap-2 text-xs mb-2">
+                  <span className="text-slate-500">Вовлечённость: <span className="text-cyan-300">{r.engagementScore}%</span></span>
+                  <span className="text-slate-500">Релевантность: <span className="text-indigo-300">{r.relevanceScore}%</span></span>
+                  <span className="text-slate-500">Доверие: <span className="text-violet-300">{r.trustScore}%</span></span>
+                </div>
+
+                {r.missingForMe.length > 0 && (
+                  <div className="text-xs text-amber-300/90">
+                    Оттолкнуло / не нашёл себя: {r.missingForMe.join(' · ')}
+                  </div>
+                )}
+                {r.highlights.length > 0 && (
+                  <div className="text-xs text-emerald-400/90 mt-1">
+                    Зацепило лично: {r.highlights.join(' · ')}
+                  </div>
+                )}
+              </div>
+            ))}
+
+            {!showAllReactions && visibleReactions.length > COLLAPSE_THRESHOLD && (
+              <button
+                type="button"
+                onClick={() => setShowAllReactions(true)}
+                className="w-full py-2.5 rounded-xl border border-border text-sm text-indigo-300 hover:bg-indigo-500/10"
+              >
+                Показать все {visibleReactions.length} реакций
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </section>
   )
