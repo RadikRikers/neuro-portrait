@@ -47,7 +47,7 @@ app.use((_req, res) => {
 app.listen(port, '0.0.0.0', () => {
   const url = `http://127.0.0.1:${port}`
   console.log(`НейроПортрет: ${url}`)
-  console.log(`Ollama: ${ollamaHost} (опционально, для AI-режима)`)
+  console.log(`Ollama: ${ollamaHost}`)
   console.log('Закройте это окно, чтобы остановить сервер.')
 
   if (process.env.OPEN_BROWSER === '1') {
