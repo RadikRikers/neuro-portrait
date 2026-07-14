@@ -45,5 +45,20 @@ app.use((_req, res) => {
 })
 
 app.listen(port, '0.0.0.0', () => {
-  console.log(`neuro-portrait listening on :${port}, ollama: ${ollamaHost}`)
+  const url = `http://127.0.0.1:${port}`
+  console.log(`НейроПортрет: ${url}`)
+  console.log(`Ollama: ${ollamaHost} (опционально, для AI-режима)`)
+  console.log('Закройте это окно, чтобы остановить сервер.')
+
+  if (process.env.OPEN_BROWSER === '1') {
+    import('node:child_process').then(({ exec }) => {
+      const cmd =
+        process.platform === 'win32'
+          ? `start "" "${url}"`
+          : process.platform === 'darwin'
+            ? `open "${url}"`
+            : `xdg-open "${url}"`
+      exec(cmd, () => {})
+    })
+  }
 })
