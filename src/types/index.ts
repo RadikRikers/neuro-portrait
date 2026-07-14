@@ -89,6 +89,9 @@ export interface PersonaReaction {
   relevanceScore: number
   overallScore: number
   sentiment: 'positive' | 'neutral' | 'negative'
+  emotion: string
+  wants: string
+  firstImpression: string
   summary: string
   innerMonologue: string
   wouldShare: boolean

@@ -47,6 +47,9 @@ export async function testText(
       ),
       missingForMe: [...new Set([...h.missingForMe, ...o.missingForMe])].slice(0, 4),
       highlights: [...new Set([...h.highlights, ...o.highlights])].slice(0, 3),
+      emotion: o.emotion || h.emotion,
+      wants: o.wants || h.wants,
+      firstImpression: o.firstImpression || h.firstImpression,
       innerMonologue: o.innerMonologue || h.innerMonologue,
       summary: o.summary || h.summary,
     }

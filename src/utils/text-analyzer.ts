@@ -10,6 +10,7 @@ import type {
   UdmurtiaZone,
 } from '../types'
 import { UDMURTIA_ZONES, ZONE_KEYWORDS } from '../data/segments'
+import { buildPersonaNarrative, portraitScoreBias } from './persona-voice'
 import { getSegmentById, isCustomSegmentId } from './segment-registry'
 
 const LOCAL_MARKERS = [
@@ -121,43 +122,7 @@ function scoreForCustomSegment(ctx: HeuristicContext, segment: AudienceSegment) 
     engagement -= 10
   }
 
-  return finalizeScores(engagement, trust, relevance, missing, highlights, ctx, segment.label)
-}
-
-function finalizeScores(
-  engagement: number,
-  trust: number,
-  relevance: number,
-  missing: string[],
-  highlights: string[],
-  ctx: HeuristicContext,
-  label: string,
-) {
-  engagement = clamp(engagement)
-  trust = clamp(trust)
-  relevance = clamp(relevance)
-  const overall = clamp(engagement * 0.4 + trust * 0.3 + relevance * 0.3)
-  const sentiment: PersonaReaction['sentiment'] =
-    overall >= 65 ? 'positive' : overall >= 45 ? 'neutral' : 'negative'
-
-  return {
-    engagement,
-    trust,
-    relevance,
-    missing,
-    highlights,
-    sentiment,
-    summary:
-      sentiment === 'positive'
-        ? `Текст скорее зацепит (${overall}%): ${label} видит себя в контенте.`
-        : sentiment === 'neutral'
-          ? `Скорее прочитаю без эмоций (${overall}%): не хватает точности под сегмент.`
-          : `Скорее пролистаю (${overall}%): текст чужой для ${label}.`,
-    innerMonologue: buildInnerMonologue(label, missing, highlights, overall),
-    wouldScrollPast: overall < 40,
-    wouldComment: ctx.hasQuestion && overall >= 50,
-    wouldShare: overall >= 70 && ctx.localHits.length > 0,
-  }
+  return { engagement, trust, relevance, missing, highlights }
 }
 
 function scoreForSegment(
@@ -170,12 +135,6 @@ function scoreForSegment(
   relevance: number
   missing: string[]
   highlights: string[]
-  sentiment: PersonaReaction['sentiment']
-  summary: string
-  innerMonologue: string
-  wouldShare: boolean
-  wouldComment: boolean
-  wouldScrollPast: boolean
 } {
   const segment = getSegmentById(segmentId, customSegments)
   if (isCustomSegmentId(segmentId)) return scoreForCustomSegment(ctx, segment)
@@ -322,21 +281,63 @@ function scoreForSegment(
     engagement -= 10
   }
 
-  return finalizeScores(engagement, trust, relevance, missing, highlights, ctx, segment.label)
+  for (const trigger of segment.engagementTriggers) {
+    const key = trigger.toLowerCase().slice(0, Math.min(12, trigger.length))
+    if (key.length >= 4 && ctx.lower.includes(key)) {
+      highlights.push(`Сработал триггер «${trigger}» для ${segment.label}`)
+      engagement += 6
+      relevance += 4
+      break
+    }
+  }
+
+  if (!highlights.some((h) => h.includes('триггер'))) {
+    missing.push(`Нет того, что цепляет ${segment.label.toLowerCase()}: ${segment.engagementTriggers.slice(0, 2).join(' / ')}`)
+    engagement -= 5
+  }
+
+  return { engagement, trust, relevance, missing, highlights }
 }
 
-function buildInnerMonologue(
-  label: string,
-  missing: string[],
-  highlights: string[],
-  score: number,
-): string {
-  const parts: string[] = [`Я — ${label}.`]
-  if (highlights.length) parts.push(`Цепляет: ${highlights[0]}.`)
-  if (missing.length) parts.push(`Не хватает: ${missing[0]}.`)
-  if (score < 45) parts.push('Чувствую, что это написано «для отчёта», не для меня.')
-  else if (score >= 70) parts.push('Могу сохранить или переслать знакомым.')
-  return parts.join(' ')
+function finalizePortraitReaction(
+  portrait: NeuroPortrait,
+  base: ReturnType<typeof scoreForSegment>,
+  ctx: HeuristicContext,
+): Omit<PersonaReaction, 'portraitId' | 'segmentLabel' | 'name' | 'age'> {
+  const bias = portraitScoreBias(portrait, ctx)
+  const engagement = clamp(base.engagement + bias.engagement)
+  const trust = clamp(base.trust + bias.trust)
+  const relevance = clamp(base.relevance + bias.relevance)
+  const overall = clamp(engagement * 0.4 + trust * 0.3 + relevance * 0.3)
+  const sentiment: PersonaReaction['sentiment'] =
+    overall >= 65 ? 'positive' : overall >= 45 ? 'neutral' : 'negative'
+
+  const narrative = buildPersonaNarrative(
+    portrait,
+    sentiment,
+    overall,
+    base.missing,
+    base.highlights,
+    ctx,
+  )
+
+  return {
+    engagementScore: engagement,
+    trustScore: trust,
+    relevanceScore: relevance,
+    overallScore: overall,
+    sentiment,
+    emotion: narrative.emotion,
+    wants: narrative.wants,
+    firstImpression: narrative.firstImpression,
+    summary: narrative.summary,
+    innerMonologue: narrative.innerMonologue,
+    wouldScrollPast: overall < 40,
+    wouldComment: ctx.hasQuestion && overall >= 50,
+    wouldShare: overall >= 70 && ctx.localHits.length > 0,
+    missingForMe: base.missing,
+    highlights: base.highlights,
+  }
 }
 
 function detectGaps(ctx: HeuristicContext, reactions: PersonaReaction[]): TextGap[] {
@@ -470,25 +471,14 @@ export function analyzeTextHeuristic(
   const ctx = analyzeTextSurface(text, contentType, zones)
 
   let reactions: PersonaReaction[] = portraits.map((p) => {
-    const s = scoreForSegment(ctx, p.segmentId, customSegments)
-    const overall = clamp(s.engagement * 0.4 + s.trust * 0.3 + s.relevance * 0.3)
+    const base = scoreForSegment(ctx, p.segmentId, customSegments)
+    const r = finalizePortraitReaction(p, base, ctx)
     return {
       portraitId: p.id,
       segmentLabel: p.segmentLabel,
       name: p.name,
       age: p.age,
-      engagementScore: s.engagement,
-      trustScore: s.trust,
-      relevanceScore: s.relevance,
-      overallScore: overall,
-      sentiment: s.sentiment,
-      summary: s.summary,
-      innerMonologue: s.innerMonologue,
-      wouldShare: s.wouldShare,
-      wouldComment: s.wouldComment,
-      wouldScrollPast: s.wouldScrollPast,
-      missingForMe: s.missing,
-      highlights: s.highlights,
+      ...r,
     }
   })
 

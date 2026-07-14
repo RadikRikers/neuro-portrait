@@ -75,7 +75,8 @@ export async function analyzeWithOllama(
   imageContext = '',
 ): Promise<PersonaReaction[] | null> {
   const personaBriefs = portraits.map((p) =>
-    `- ${p.name}, ${p.age} лет, ${p.segmentLabel}, ${p.city}: ${p.bio}. Ценности: ${p.values.join(', ')}. Боли: ${p.painPoints.join(', ')}`,
+    `- ID ${p.id}: ${p.name}, ${p.age} лет, ${p.segmentLabel}, ${p.city}, ${p.occupation}. ${p.bio}
+  Ценности: ${p.values.join(', ')}. Боли: ${p.painPoints.join(', ')}. Стиль речи: ${p.languageStyle}. Каналы: ${p.channels.join(', ')}. Любимое место: ${p.favoritePlace}`,
   ).join('\n')
 
   const imageBlock = imageContext
@@ -86,13 +87,20 @@ export async function analyzeWithOllama(
     ? zones.map((z) => UDMURTIA_ZONES.find((u) => u.id === z)?.name ?? z).join(', ')
     : 'Ижевск'
 
-  const prompt = `Ты симулируешь реакцию жителей Удмуртии на контент (текст и при наличии — изображение). Ответь ТОЛЬКО валидным JSON-массивом без markdown.
+  const prompt = `Ты — симулятор живых жителей Удмуртии. Не аналитик и не PR-щик. Каждый персонаж отвечает СВОИМ голосом, эмоциями и мотивами — реакции должны РАЗЛИЧАТЬСЯ даже внутри одной категории.
+
+Правила:
+- Пиши от первого лица, как в голове у человека из ленты VK/Telegram.
+- Учитывай возраст, город, профессию, ценности и боли персонажа.
+- Эмоция и «что хочу от поста» обязательны и конкретны.
+- Оценки (0–100) не ставь всем одинаковые — у скептика ниже доверие, у заинтересованного выше вовлечённость.
+- Шаблонные фразы «текст зацепит аудиторию» запрещены.
 
 Персонажи:
 ${personaBriefs}
 
 Тип контента: ${contentType}
-Зоны охвата: ${zoneLabel}${zones.length > 1 ? ' (пост может быть на всю республику — учитывай все выбранные города)' : ''}
+Зоны охвата: ${zoneLabel}${zones.length > 1 ? ' (пост на всю республику — смотри, видит ли себя житель каждого города)' : ''}
 
 Текст:
 """
@@ -100,20 +108,23 @@ ${text}
 """
 ${imageBlock}
 
-Для КАЖДОГО персонажа (в том же порядке) верни объект:
+Ответь ТОЛЬКО валидным JSON-массивом без markdown. Для КАЖДОГО персонажа (в том же порядке):
 {
   "portraitId": "id",
   "engagementScore": 0-100,
   "trustScore": 0-100,
   "relevanceScore": 0-100,
   "sentiment": "positive"|"neutral"|"negative",
-  "summary": "прогноз отклика",
-  "innerMonologue": "2-3 предложения от первого лица",
+  "emotion": "одно слово: интерес|скепсис|тревога|раздражение|гордость|равнодушие|...",
+  "wants": "что этот человек хочет получить от поста — одно предложение",
+  "firstImpression": "первая мысль при прочтении — живая фраза",
+  "summary": "прогноз отклика с именем и эмоцией",
+  "innerMonologue": "3–4 предложения от первого лица, разговорным языком сегмента",
   "wouldShare": boolean,
   "wouldComment": boolean,
   "wouldScrollPast": boolean,
-  "missingForMe": ["чего не хватает"],
-  "highlights": ["что сработало"]
+  "missingForMe": ["чего не хватает именно этому человеку"],
+  "highlights": ["что сработало для него"]
 }
 
 IDs: ${portraits.map((p) => p.id).join(', ')}`
@@ -148,6 +159,8 @@ IDs: ${portraits.map((p) => p.id).join(', ')}`
       const relevance = clamp(item.relevanceScore ?? 50)
       const overall = clamp(engagement * 0.4 + trust * 0.3 + relevance * 0.3)
 
+      const sentiment = item.sentiment ?? (overall >= 65 ? 'positive' : overall >= 45 ? 'neutral' : 'negative')
+
       return {
         portraitId: p.id,
         segmentLabel: p.segmentLabel,
@@ -157,7 +170,10 @@ IDs: ${portraits.map((p) => p.id).join(', ')}`
         trustScore: trust,
         relevanceScore: relevance,
         overallScore: overall,
-        sentiment: item.sentiment ?? (overall >= 65 ? 'positive' : overall >= 45 ? 'neutral' : 'negative'),
+        sentiment,
+        emotion: item.emotion ?? (sentiment === 'positive' ? 'интерес' : sentiment === 'negative' ? 'скепсис' : 'сдержанность'),
+        wants: item.wants ?? 'понять, зачем мне это',
+        firstImpression: item.firstImpression ?? item.summary ?? 'Пока непонятно.',
         summary: item.summary ?? 'Анализ недоступен',
         innerMonologue: item.innerMonologue ?? '',
         wouldShare: Boolean(item.wouldShare),

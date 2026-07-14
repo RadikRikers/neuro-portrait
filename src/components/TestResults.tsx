@@ -140,9 +140,17 @@ export function TestResults({ result }: TestResultsProps) {
                 </div>
               </div>
 
+              <div className="flex flex-wrap gap-2 text-xs mb-2">
+                <span className="px-2 py-0.5 rounded-md bg-indigo-500/15 text-indigo-200">
+                  {r.emotion}
+                </span>
+                <span className="text-slate-500">Хочет: <span className="text-slate-300">{r.wants}</span></span>
+              </div>
+
+              <p className="text-sm text-amber-200/90 mb-2">«{r.firstImpression}»</p>
               <p className="text-sm text-slate-300 mb-2">{r.summary}</p>
               <p className="text-sm text-slate-400 italic border-l-2 border-indigo-500/20 pl-3 mb-3">
-                «{r.innerMonologue}»
+                {r.innerMonologue}
               </p>
 
               <div className="grid sm:grid-cols-3 gap-2 text-xs mb-2">

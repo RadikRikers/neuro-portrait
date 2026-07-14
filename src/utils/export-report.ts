@@ -66,8 +66,11 @@ export function exportTestReportTxt(result: TextTestResult): string {
     lines.push(
       '',
       `${r.name} (${r.segmentLabel}, ${r.age} лет) — ${r.overallScore}%`,
+      `Эмоция: ${r.emotion}`,
+      `Хочет: ${r.wants}`,
+      `Первое впечатление: «${r.firstImpression}»`,
       `Прогноз: ${r.summary}`,
-      `Мысли: «${r.innerMonologue}»`,
+      `Мысли: ${r.innerMonologue}`,
       `Вовлечённость ${r.engagementScore}% | Релевантность ${r.relevanceScore}% | Доверие ${r.trustScore}%`,
       `Поведение: ${[
         r.wouldShare ? 'поделится' : null,
