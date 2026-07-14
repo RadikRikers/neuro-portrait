@@ -30,7 +30,8 @@ const NODE_VERSION = '20.19.0'
 const OLLAMA_VERSION = 'v0.32.0'
 const DEFAULT_MODEL = 'llama3.2'
 const PORT = '8765'
-const OLLAMA_PORT = '11434'
+/** Отдельный порт, чтобы не конфликтовать с системным Ollama на 11434 */
+const OLLAMA_PORT = '11435'
 
 const NODE_RUNTIMES = [
   { id: 'win', archive: `node-v${NODE_VERSION}-win-x64.zip`, nodePath: 'node.exe', extract: 'zip' },
